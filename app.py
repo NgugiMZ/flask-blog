@@ -1,112 +1,144 @@
-from flask import Flask, render_template, redirect, url_for, flash, request
+from flask import Flask, render_template, redirect, url_for, flash, request, abort
 from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+from flask_login import LoginManager, login_user, current_user, logout_user, login_required
+from flask_migrate import Migrate
 from werkzeug.security import generate_password_hash, check_password_hash
-from forms import RegistrationForm, LoginForm, PostForm
-import models  # import the module, not the classes
+from werkzeug.utils import secure_filename
+from forms import RegistrationForm, LoginForm, PostForm, UpdateProfileForm
+from models import db, User, Post
+import os
+import secrets
+from PIL import Image
 
-# App config
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'xgongive'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///blog.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'
+app.config['UPLOAD_FOLDER'] = 'static/profile_pics'
 
-# Init DB and Login
-models.db.init_app(app)
-models.login_manager.init_app(app)
-models.login_manager.login_view = 'login'
-models.login_manager.login_message_category = 'info'
+db.init_app(app)
+migrate = Migrate(app, db)
 
-@app.route("/")
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# -------------------- Utility --------------------
+def save_picture(form_picture):
+    random_hex = secrets.token_hex(8)
+    _, f_ext = os.path.splitext(form_picture.filename)
+    picture_fn = random_hex + f_ext
+    picture_path = os.path.join(app.root_path, app.config['UPLOAD_FOLDER'], picture_fn)
+
+    output_size = (300, 300)
+    img = Image.open(form_picture)
+    img.thumbnail(output_size)
+    img.save(picture_path)
+
+    return picture_fn
+
+# -------------------- Routes --------------------
+@app.route('/')
 def home():
-    posts = models.Post.query.all()
-    return render_template("home.html", posts=posts)
+    page = request.args.get('page', 1, type=int)
+    posts = Post.query.order_by(Post.date_posted.desc()).paginate(page=page, per_page=5)
+    return render_template('home.html', posts=posts)
 
-#register route
-@app.route("/register", methods=["GET", "POST"])
+@app.route('/register', methods=['GET', 'POST'])
 def register():
     if current_user.is_authenticated:
         return redirect(url_for('home'))
-
     form = RegistrationForm()
     if form.validate_on_submit():
-        hashed_pw = generate_password_hash(form.password.data)
-        user = models.User(username=form.username.data, email=form.email.data, password=hashed_pw)
-        models.db.session.add(user)
-        models.db.session.commit()
-        flash("Account created! You can now log in.", "success")
+        hashed_password = generate_password_hash(form.password.data)
+        user = User(username=form.username.data, email=form.email.data, password=hashed_password)
+        db.session.add(user)
+        db.session.commit()
+        flash('Account created successfully! You can now log in.', 'success')
         return redirect(url_for('login'))
-    return render_template("register.html", form=form)
+    return render_template('register.html', form=form)
 
-#login route
-@app.route("/login", methods=["GET", "POST"])
+@app.route('/login', methods=['GET', 'POST'])
 def login():
     if current_user.is_authenticated:
         return redirect(url_for('home'))
-
     form = LoginForm()
     if form.validate_on_submit():
-        user = models.User.query.filter_by(email=form.email.data).first()
+        user = User.query.filter_by(email=form.email.data).first()
         if user and check_password_hash(user.password, form.password.data):
             login_user(user)
-            flash("You are now logged in.", "success")
+            flash('Logged in successfully.', 'success')
             return redirect(url_for('home'))
         else:
-            flash("Login unsuccessful. Check email and password.", "danger")
-    return render_template("login.html", form=form)
+            flash('Login unsuccessful. Please check email and password.', 'danger')
+    return render_template('login.html', form=form)
 
-#logout route
-@app.route("/logout")
+@app.route('/logout')
 def logout():
     logout_user()
     return redirect(url_for('home'))
 
-#post route
-@app.route("/create", methods=["GET", "POST"])
+@app.route('/post/new', methods=['GET', 'POST'])
 @login_required
 def create_post():
     form = PostForm()
     if form.validate_on_submit():
-        post = models.Post(title=form.title.data, content=form.content.data, author=current_user)
-        models.db.session.add(post)
-        models.db.session.commit()
-        flash("Post created!", "success")
+        post = Post(title=form.title.data, content=form.content.data, author=current_user)
+        db.session.add(post)
+        db.session.commit()
+        flash('Your post has been created!', 'success')
         return redirect(url_for('home'))
-    return render_template("create_post.html", form=form)
+    return render_template('create_post.html', form=form)
 
+@app.route('/post/<int:post_id>')
+def post(post_id):
+    post = Post.query.get_or_404(post_id)
+    return render_template('post.html', post=post)
 
-@app.route("/post/<int:post_id>/edit", methods=["GET", "POST"])
+@app.route('/post/<int:post_id>/edit', methods=['GET', 'POST'])
 @login_required
 def edit_post(post_id):
-    post = models.Post.query.get_or_404(post_id)
+    post = Post.query.get_or_404(post_id)
     if post.author != current_user:
-        flash("You can't edit this post.", "danger")
-        return redirect(url_for('home'))
-
+        abort(403)
     form = PostForm(obj=post)
     if form.validate_on_submit():
         post.title = form.title.data
         post.content = form.content.data
-        models.db.session.commit()
-        flash("Post updated!", "success")
-        return redirect(url_for('home'))
+        db.session.commit()
+        flash('Post updated successfully.', 'success')
+        return redirect(url_for('post', post_id=post.id))
+    return render_template('create_post.html', form=form)
 
-    return render_template("edit_post.html", form=form, post=post)
-
-
-@app.route("/post/<int:post_id>/delete", methods=["POST"])
+@app.route('/post/<int:post_id>/delete', methods=['POST'])
 @login_required
 def delete_post(post_id):
-    post = models.Post.query.get_or_404(post_id)
+    post = Post.query.get_or_404(post_id)
     if post.author != current_user:
-        flash("You can't delete this post.", "danger")
-        return redirect(url_for('home'))
-
-    models.db.session.delete(post)
-    models.db.session.commit()
-    flash("Post deleted!", "info")
+        abort(403)
+    db.session.delete(post)
+    db.session.commit()
+    flash('Post deleted.', 'info')
     return redirect(url_for('home'))
 
+@app.route('/profile', methods=['GET', 'POST'])
+@login_required
+def profile():
+    form = UpdateProfileForm()
+    if form.validate_on_submit():
+        if form.picture.data:
+            picture_file = save_picture(form.picture.data)
+            current_user.image_file = picture_file
+        current_user.bio = form.bio.data
+        db.session.commit()
+        flash('Your profile has been updated.', 'success')
+        return redirect(url_for('profile'))
+    elif request.method == 'GET':
+        form.bio.data = current_user.bio
+    return render_template('profile.html', user=current_user, form=form)
 
-if __name__ == "__main__":
+# -------------------- Run App --------------------
+if __name__ == '__main__':
     app.run(debug=True)
