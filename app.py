@@ -127,16 +127,34 @@ def delete_post(post_id):
 @login_required
 def profile():
     form = UpdateProfileForm()
+    
     if form.validate_on_submit():
-        if form.picture.data:
-            picture_file = save_picture(form.picture.data)
-            current_user.image_file = picture_file
-        current_user.bio = form.bio.data
-        db.session.commit()
-        flash('Your profile has been updated.', 'success')
+        changes_made = False  # Track if any real update happens
+
+        # Handle image upload only if a file is chosen
+        image_data = form.image_file.data
+        if image_data and hasattr(image_data, 'filename') and image_data.filename.strip():
+            picture_file = save_picture(image_data)
+            if picture_file:  # Ensure save_picture returns a valid file name
+                current_user.image_file = picture_file
+                changes_made = True
+
+        # Check if bio changed
+        if form.bio.data != current_user.bio:
+            current_user.bio = form.bio.data
+            changes_made = True
+
+        if changes_made:
+            db.session.commit()
+            flash('Your profile has been updated.', 'success')
+        else:
+            flash('No changes were made.', 'info')
+
         return redirect(url_for('profile'))
+
     elif request.method == 'GET':
         form.bio.data = current_user.bio
+
     return render_template('profile.html', user=current_user, form=form)
 
 # -------------------- Run App --------------------
